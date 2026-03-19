@@ -83,6 +83,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// create suitable ssh signing key for the CA
 	signer, err := ssh.NewSignerFromKey(privateKey)
 
 	if err != nil {
@@ -99,6 +100,7 @@ func main() {
 
 		var b body
 
+		// obtain the token from the http headers and validate that is correctly signed
 		token := r.Header.Get(HEADER)
 		supplicant, err := b.decode(token)
 
@@ -109,6 +111,7 @@ func main() {
 			return
 		}
 
+		// look up the signing key in the user database
 		principals, exists := keys[supplicant]
 
 		if !exists {
@@ -118,6 +121,7 @@ func main() {
 			return
 		}
 
+		// unmarshal the ephemeral public key
 		raw, err := base64.StdEncoding.DecodeString(b.Key)
 
 		if err != nil {
@@ -146,6 +150,7 @@ func main() {
 			//"permit-user-rc":          "",
 		}
 
+		// create a certificate for the ephemeral key with the principals from the user database
 		cert := ssh.Certificate{
 			Key:             key,
 			Serial:          uint64(time.Now().UnixNano()), // this could likely be better done
@@ -161,6 +166,7 @@ func main() {
 			//Signature      *Signature
 		}
 
+		// sign the certificate with the CA private key
 		if err = cert.SignCert(rand.Reader, signer); err != nil {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -168,6 +174,7 @@ func main() {
 			return
 		}
 
+		// return to the client!
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		w.Write(cert.Marshal())
@@ -180,7 +187,7 @@ func main() {
 
 func client(args []string) {
 
-	var marker string
+	var identifier string
 
 	if len(args) > 0 {
 		marker = args[0]
@@ -200,16 +207,18 @@ func client(args []string) {
 		log.Fatal(err)
 	}
 
-	if marker != "" {
+	// first look for a key that matches the identifier given on the command line, if present
+	if identifier != "" {
 		for _, key := range list {
 			blob := base64.RawURLEncoding.EncodeToString(key.Marshal())
-			if key.Comment == marker || blob == marker {
+			if key.Comment == identifier || blob == identifier {
 				authWithKey(client, key)
 				return
 			}
 		}
 	}
 
+	// failing that look for the first ssh-ed25519 key
 	for _, key := range list {
 		if key.Format == "ssh-ed25519" {
 			authWithKey(client, key)
@@ -217,6 +226,7 @@ func client(args []string) {
 		}
 	}
 
+	// failing that try the first key available
 	for _, key := range list {
 		authWithKey(client, key)
 		return
@@ -225,30 +235,35 @@ func client(args []string) {
 	log.Fatal("No suitable key found")
 }
 
-func authWithKey(client agent.Agent, k *agent.Key) {
+func authWithKey(client agent.Agent, authKey *agent.Key) {
 
+	// generate an ephemeral key pair
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// obtain an ssh representation for submitting to the server
 	sshPublicKey, err := ssh.NewPublicKey(publicKey)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// marshal it into the base64 representaion
 	b := body{
 		Key: base64.StdEncoding.EncodeToString(sshPublicKey.Marshal()),
 	}
 
-	tokenString, err := b.encode(client, k)
+	// sign the request with the auth key picked from ssh-agent
+	tokenString, err := b.encode(client, authKey)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// submit the token to the server and hope that our request is approved
 	certificate, err := getCertificate(tokenString)
 
 	if err != nil {
@@ -257,6 +272,7 @@ func authWithKey(client agent.Agent, k *agent.Key) {
 
 	now := uint64(time.Now().Unix())
 
+	// prepare a request to the ssh-agent, specifying our ephemeral private key and its certificate
 	addedKey := agent.AddedKey{
 		PrivateKey:   privateKey,
 		Certificate:  certificate,
@@ -266,6 +282,7 @@ func authWithKey(client agent.Agent, k *agent.Key) {
 		//ConstraintExtensions []ConstraintExtension
 	}
 
+	// add the key/cert to ssh-agent
 	err = client.Add(addedKey)
 
 	if err != nil {
@@ -340,6 +357,7 @@ func loadFile(file string) []byte {
 	return b
 }
 
+// JWT-like structures for generating/vaildating  a token
 type body struct {
 	Key string `json:"key"`
 }
@@ -374,10 +392,11 @@ func unmarshal(s string, a any) (err error) {
 
 func (b *body) encode(client agent.Agent, key *agent.Key) (s string, err error) {
 
-	h := head{Fmt: key.Format, Key: base64.StdEncoding.EncodeToString(key.Marshal())}
-
 	var header, payload string
 	var signature *ssh.Signature
+
+	// prepare the header with the key and its type
+	h := head{Fmt: key.Format, Key: base64.StdEncoding.EncodeToString(key.Marshal())}
 
 	if payload, err = b.marshal(); err != nil {
 		return
@@ -389,10 +408,12 @@ func (b *body) encode(client agent.Agent, key *agent.Key) (s string, err error) 
 
 	preamble := header + "." + payload
 
+	// sign the base64 encoded head and body
 	if signature, err = client.Sign(key, []byte(preamble)); err != nil {
 		return
 	}
 
+	// concatenate the signature onto the base64 encoded head and body
 	return preamble + "." + base64.RawURLEncoding.EncodeToString(signature.Blob), nil
 }
 
@@ -410,6 +431,7 @@ func (b *body) decode(token string) (string, error) {
 		return "", err
 	}
 
+	// take the key from the header ...
 	pub, err := base64.StdEncoding.DecodeString(h.Key)
 
 	if err != nil {
@@ -422,21 +444,24 @@ func (b *body) decode(token string) (string, error) {
 		return "", err
 	}
 
+	// ... and the signature
 	blob, err := base64.RawURLEncoding.DecodeString(m[2])
 
 	if err != nil {
 		return "", err
 	}
 
-	var signature ssh.Signature
+	signature := ssh.Signature{
+		Format: h.Fmt,
+		Blob:   blob,
+	}
 
-	signature.Format = h.Fmt
-	signature.Blob = blob
-
+	// verify that the key specified in the header signed the header and body and nothing was tampered with
 	if err = key.Verify([]byte(m[0]+"."+m[1]), &signature); err != nil {
 		return "", err
 	}
 
+	// now that the token has been verified we can unmarshal the body
 	if err = b.unmarshal(m[1]); err != nil {
 		return "", err
 	}

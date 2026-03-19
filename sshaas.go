@@ -148,7 +148,7 @@ func main() {
 
 		cert := ssh.Certificate{
 			Key:             key,
-			Serial:          now,
+			Serial:          uint64(time.Now().UnixNano()), // this could likely be better done
 			CertType:        ssh.UserCert,
 			KeyId:           fmt.Sprint(now),
 			ValidPrincipals: principals,

@@ -11,6 +11,9 @@ purposes and generates an ephemeral key for certification. The
 ephemeral key/certificate are stored in ssh-agent for the lifetime of
 the certificate.
 
+You probably shouldn't use this in production unless you've checked my
+crypto for errors.
+
 # Configuration example
 
 ```
@@ -22,7 +25,7 @@ users:
     key: AAAAC3NzaC1lZDI1NTE5AAAAID2wmSViPXhYY9yjEBnUJJCaV1YBpbKmbIlBzC4EJSj5
     principals: [ alice, sysadm ]
 
-  # Bob may only log in to servers as the unprivileged business-as-usual user
+  # Bob may only log in to servers as an unprivileged business-as-usual user
   - name: Bob
     key: AAAAC3NzaC1lZDI1NTE5AAAAILQ2vgbwJjPqhptlTkr9bTjAkHTdwte98rTDijQ+ygjo
     principals: [ bau ]
@@ -62,3 +65,38 @@ $ ssh-add -l
 256 SHA256:JHXy5DxBdzawOgXPbxliACkGtCKQ8AcshlnBWvTfjvo not-this-one (ED25519)
 256 SHA256:As+6hsinvjdp8MV0DphJzzUfvHoFt9q0V7T7GWTZJKk SSH-as-a-Service (ED25519-CERT)
 ```
+
+# Process
+
+The client selects an authorised key from those provided by ssh-agent,
+and then generates an ephemeral key pair. Using a similar process to JWTs,
+the client creates a JSON header which specifies the authorised key
+(and its type), and a body containing the public part of ephemeral
+key.
+
+The two sections are both base64 encoded, concatenated with a `.` and
+signed with the authorised key (via ssh-agent). The signature is
+concatenated with a `.` to the other two sections.
+
+The resulting token is then submitted to the server, which validates
+that the token is signed by the authorised key, thus proving that the
+client is genuine and the request has not been tampered with. If the
+authorised key is present in the configuration then the principals
+which the key should have access to are determined.
+
+The ephemeral key from the body of the request is signed into a short
+lifetime certificate along with the principals and returned to the
+client.
+
+The client can then add the private ephemeral key and certificate to
+the ssh-agent, thereby allowing access to servers for a limited
+time. Once the certificate lifetime expires ssh-agent will
+automatically remove the key and certificate.
+
+# TODO
+
+Intercepting and replaying a token is useless unless you have the
+ephemeral private key, but I should probably add a replay cache Just
+In Case&trade;.
+
+If you are aware of any weakness in the process then please let me know!

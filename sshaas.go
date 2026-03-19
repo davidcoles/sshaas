@@ -118,7 +118,7 @@ func main() {
 			return
 		}
 
-		raw, err := base64.RawURLEncoding.DecodeString(b.Key)
+		raw, err := base64.StdEncoding.DecodeString(b.Key)
 
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
@@ -240,7 +240,7 @@ func authWithKey(client agent.Agent, k *agent.Key) {
 	}
 
 	b := body{
-		Key: base64.RawURLEncoding.EncodeToString(sshPublicKey.Marshal()),
+		Key: base64.StdEncoding.EncodeToString(sshPublicKey.Marshal()),
 	}
 
 	tokenString, err := b.encode(client, k)
@@ -374,7 +374,7 @@ func unmarshal(s string, a any) (err error) {
 
 func (b *body) encode(client agent.Agent, key *agent.Key) (s string, err error) {
 
-	h := head{Fmt: key.Format, Key: base64.RawURLEncoding.EncodeToString(key.Marshal())}
+	h := head{Fmt: key.Format, Key: base64.StdEncoding.EncodeToString(key.Marshal())}
 
 	var header, payload string
 	var signature *ssh.Signature
@@ -410,7 +410,7 @@ func (b *body) decode(token string) (string, error) {
 		return "", err
 	}
 
-	pub, err := base64.RawURLEncoding.DecodeString(h.Key)
+	pub, err := base64.StdEncoding.DecodeString(h.Key)
 
 	if err != nil {
 		return "", err

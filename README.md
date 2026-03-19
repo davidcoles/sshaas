@@ -1,13 +1,15 @@
 # SSH-as-a-Service - short lifetime certificates for SSH (server and client)
 
-A simple SSH certification authority server. Given a private key and a
-configuration file describing authorised keys, the server will generate
-short duration certificates granting access for the listed principals.
+A simple SSH certification authority server. Given a private (CA) key
+and a configuration file describing authorised users, the server will
+generate short duration certificates granting access for the listed
+principals.
 
-To avoid the client needing to have access to private keys, it contacts
-the ssh-agent to find the key to use for authentication and generates
-an ephemeral key for certification. The ephemeral key/certificate are
-stored in ssh-agent for the lifetime of the certificate.
+To avoid the client needing to have access to private keys, it
+contacts the ssh-agent to find the key to use for authentication
+purposes and generates an ephemeral key for certification. The
+ephemeral key/certificate are stored in ssh-agent for the lifetime of
+the certificate.
 
 # Configuration example
 
@@ -27,12 +29,15 @@ users:
 
 ```
 
-The makefile uses `yq` to convert this to JSON format that the server reads.
+The makefile uses `yq` to convert this to the JSON format that the server reads.
 
 # Server example
 
 `sshaas -key /path/to/ca-private-key-file -lifetime 60 config.json`
 
+By default the server listens on loopback, port 9999. You can change
+this using the `-listen` flag (and the `-endpoint` flag to tell
+the client where to find the server).
 
 # Client example
 

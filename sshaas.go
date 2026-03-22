@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -33,8 +32,10 @@ type Config struct {
 	Users []User `json:"users"`
 }
 
-var ENDPOINT = flag.String("endpoint", "http://localhost:9999/sshaas", "endpoint url")
-var LIFETIME = flag.Uint("lifetime", 300, "certificate lifetime (seconds)")
+var ENDPOINT = "http://localhost:9999/sshaas"
+
+var endpoint = flag.String("endpoint", ENDPOINT, "endpoint url")
+var lifetime = flag.Uint("lifetime", 300, "certificate lifetime (seconds)")
 
 func main() {
 
@@ -158,7 +159,7 @@ func main() {
 			KeyId:           fmt.Sprint(now),
 			ValidPrincipals: principals,
 			ValidAfter:      now - 30, // allow for a little clock skew
-			ValidBefore:     now + uint64(*LIFETIME),
+			ValidBefore:     now + uint64(*lifetime),
 			Permissions:     ssh.Permissions{Extensions: permissions},
 			//Nonce          []byte
 			//Reserved       []byte
@@ -190,10 +191,11 @@ func client(args []string) {
 	var identifier string
 
 	if len(args) > 0 {
-		marker = args[0]
+		identifier = args[0]
 	}
 
-	conn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	//conn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	conn, err := dial()
 
 	if err != nil {
 		log.Fatalf("Failed to open SSH_AUTH_SOCK: %v", err)
@@ -293,7 +295,7 @@ func authWithKey(client agent.Agent, authKey *agent.Key) {
 func getCertificate(token string) (*ssh.Certificate, error) {
 
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", *ENDPOINT, nil)
+	req, err := http.NewRequest("GET", *endpoint, nil)
 
 	if err != nil {
 		return nil, err

@@ -1,5 +1,5 @@
 
-DOMAIN ?= default
+DEFAULTCA ?= default
 ENDPOINT ?= http://localhost:9999/sshaas
 
 all: sshaas config.json

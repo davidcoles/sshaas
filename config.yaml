@@ -1,7 +1,8 @@
 ---
 
-domains:
+ca:
   default: AAAAC3NzaC1lZDI1NTE5AAAAIIfjTBypG/OjMECi2QGhEFk2Li4alOuybBMBbE13aom6
+  other: AAAAC3NzaC1lZDI1NTE5AAAAIBLaJuz5RQ4GcXmcNHjA00UYcU981X3Hg8obqAI+J0qg
 
 users:
 
@@ -14,3 +15,9 @@ users:
   - name: Bob 
     key: AAAAC3NzaC1lZDI1NTE5AAAAIPj4kYQUE/42Ygv6IAq68YFSP5aEc29raBeq5M6LtmnJ
     principals: [ bau ]
+
+  # Eve gets a certificate signed by the "other" CA
+  - name: Eve
+    key: AAAAC3NzaC1lZDI1NTE5AAAAIG9kZyQ0b+yamw6kzWGs1BRuJSEoIexEXTkdzaBqQohD
+    principals: [ eve ]
+    ca: other

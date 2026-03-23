@@ -13,12 +13,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	//"syscall"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-	//"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 const HEADER = "X-SSH-as-a-Service"
@@ -26,18 +26,18 @@ const HEADER = "X-SSH-as-a-Service"
 type User struct {
 	Name       string   `json:"name"`
 	Key        string   `json:"key"`
-	Domain     string   `json:"domain"`
+	CA         string   `json:"ca"`
 	Principals []string `json:"principals"`
 }
 
 type Config struct {
-	Domains map[string]string `json:"domains"`
-	Users   []User            `json:"users"`
+	CA    map[string]string `json:"ca"`
+	Users []User            `json:"users"`
 }
 
-var DOMAIN = "default"
+var DEFAULTCA = "default"
 var ENDPOINT = "http://localhost:9999/sshaas"
-var LIFETIME = flag.Uint("lifetime", 60, "certificate lifetime (seconds)")
+var LIFETIME = flag.Uint("lifetime", 5, "certificate lifetime (minutes)")
 
 func main() {
 
@@ -113,6 +113,43 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 		log.Fatal(err)
 	}
 
+	for _, k := range keys {
+
+		raw := loadFile(k)
+		privateKey, err := ssh.ParseRawPrivateKey(raw)
+
+		if _, ok := err.(*ssh.PassphraseMissingError); ok {
+
+			var passphrase []byte
+
+			fmt.Printf("%s passphrase: ")
+
+			passphrase, err = terminal.ReadPassword(int(syscall.Stdin))
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			privateKey, err = ssh.ParseRawPrivateKeyWithPassphrase(raw, passphrase)
+		}
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		addedKey := agent.AddedKey{
+			PrivateKey: privateKey,
+			Comment:    k,
+		}
+
+		// add the key/cert to ssh-agent
+		err = client.Add(addedKey)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	users := make(map[string]User)
 
 	for _, u := range config.Users {
@@ -146,18 +183,25 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 			return
 		}
 
-		domain := user.Domain
-
-		if domain == "" {
-			domain = DOMAIN
+		if len(user.Principals) < 1 {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "No principals listed")
+			return
 		}
 
-		pub, exists := config.Domains[domain]
+		ca := user.CA
+
+		if ca == "" {
+			ca = DEFAULTCA
+		}
+
+		pub, exists := config.CA[ca]
 
 		if !exists {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, "domain not found")
+			fmt.Fprintln(w, "CA not found")
 			return
 		}
 
@@ -166,7 +210,7 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 		for _, s := range list {
 			key := s.PublicKey()
 			blob := base64.StdEncoding.EncodeToString(key.Marshal())
-			log.Println(key, blob)
+			//log.Println(key, blob)
 			if pub == blob {
 				// this is the key that we're looking for
 				signer = s
@@ -216,8 +260,8 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 			CertType:        ssh.UserCert,
 			KeyId:           fmt.Sprint(now),
 			ValidPrincipals: user.Principals,
-			ValidAfter:      now - 30, // allow for a little clock skew
-			ValidBefore:     now + uint64(*LIFETIME),
+			ValidAfter:      now - 30, // allow for a little clock skew (seconds)
+			ValidBefore:     now + uint64(*LIFETIME*60),
 			Permissions:     ssh.Permissions{Extensions: permissions},
 			//Nonce          []byte
 			//Reserved       []byte

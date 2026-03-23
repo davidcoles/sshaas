@@ -204,9 +204,9 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 			return
 		}
 
-		list, _ := client.Signers()
+		signers, _ := client.Signers()
 
-		for _, s := range list {
+		for _, s := range signers {
 			key := s.PublicKey()
 			blob := base64.StdEncoding.EncodeToString(key.Marshal())
 			//log.Println(key, blob)

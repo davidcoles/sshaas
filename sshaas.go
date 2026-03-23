@@ -160,11 +160,10 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 
 		var signer ssh.Signer
 
-		var b body
+		var token Token
 
 		// obtain the token from the http headers and validate that is correctly signed
-		token := r.Header.Get(HEADER)
-		supplicant, err := b.decode(token)
+		supplicant, err := token.decode(r.Header.Get(HEADER))
 
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
@@ -225,7 +224,7 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 		}
 
 		// unmarshal the ephemeral public key
-		raw, err := base64.StdEncoding.DecodeString(b.EphemeralKey)
+		raw, err := base64.StdEncoding.DecodeString(token.EphemeralKey)
 
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
@@ -305,12 +304,14 @@ func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 	}
 
 	// marshal it into the base64 representaion
-	b := body{
+	token := Token{
+		Format:       authKey.Format,
+		Supplicant:   base64.StdEncoding.EncodeToString(authKey.Marshal()),
 		EphemeralKey: base64.StdEncoding.EncodeToString(sshPublicKey.Marshal()),
 	}
 
 	// sign the request with the auth key picked from ssh-agent
-	tokenString, err := b.encode(client, authKey)
+	tokenString, err := token.encode(client, authKey)
 
 	if err != nil {
 		log.Fatal(err)
@@ -414,82 +415,55 @@ func loadFile(file string) []byte {
 	return b
 }
 
-// JWT-like structures for generating/vaildating  a token
-type body struct {
+type Token struct {
+	Format       string `json:"format"`
+	Supplicant   string `json:"supplicant"`
 	EphemeralKey string `json:"key"`
 }
 
-type head struct {
-	Format string `json:"fmt"`
-	Key    string `json:"key"`
-}
+func (t *Token) encode(client agent.Agent, key *agent.Key) (s string, err error) {
 
-func (h *head) marshal() (string, error) { return marshal(h) }
-func (b *body) marshal() (string, error) { return marshal(b) }
-func (h *head) unmarshal(s string) error { return unmarshal(s, h) }
-func (b *body) unmarshal(s string) error { return unmarshal(s, b) }
+	t.Format = key.Format
+	t.Supplicant = base64.StdEncoding.EncodeToString(key.Marshal())
 
-func marshal(a any) (string, error) {
-	js, err := json.Marshal(a)
+	js, err := json.Marshal(t)
+
 	if err != nil {
-		return "", err
+		return
 	}
-	return base64.RawURLEncoding.EncodeToString(js), nil
+
+	payload := base64.RawURLEncoding.EncodeToString(js)
+
+	signature, err := client.Sign(key, []byte(payload))
+
+	if err != nil {
+		return
+	}
+
+	return payload + "." + base64.RawURLEncoding.EncodeToString(signature.Blob), nil
 }
 
-func unmarshal(s string, a any) (err error) {
-	var b []byte
+func (t *Token) decode(s string) (string, error) {
 
-	if b, err = base64.RawURLEncoding.DecodeString(s); err != nil {
-		return
-	}
+	m := strings.SplitN(s, ".", 2)
 
-	return json.Unmarshal(b, a)
-}
-
-func (b *body) encode(client agent.Agent, key *agent.Key) (s string, err error) {
-
-	var header, payload string
-	var signature *ssh.Signature
-
-	// prepare the header with the key and its type
-	h := head{Format: key.Format, Key: base64.StdEncoding.EncodeToString(key.Marshal())}
-
-	if payload, err = b.marshal(); err != nil {
-		return
-	}
-
-	if header, err = h.marshal(); err != nil {
-		return
-	}
-
-	preamble := header + "." + payload
-
-	// sign the base64 encoded head and body
-	if signature, err = client.Sign(key, []byte(preamble)); err != nil {
-		return
-	}
-
-	// concatenate the signature onto the base64 encoded head and body
-	return preamble + "." + base64.RawURLEncoding.EncodeToString(signature.Blob), nil
-}
-
-func (b *body) decode(token string) (string, error) {
-
-	m := strings.SplitN(token, ".", 3)
-
-	if len(m) != 3 {
+	if len(m) != 2 {
 		return "", fmt.Errorf("Bad token")
 	}
 
-	var h head
+	js, err := base64.RawURLEncoding.DecodeString(m[0])
 
-	if err := h.unmarshal(m[0]); err != nil {
+	if err != nil {
 		return "", err
 	}
 
-	// take the key from the header ...
-	pub, err := base64.StdEncoding.DecodeString(h.Key)
+	err = json.Unmarshal(js, t)
+
+	if err != nil {
+		return "", err
+	}
+
+	pub, err := base64.StdEncoding.DecodeString(t.Supplicant)
 
 	if err != nil {
 		return "", err
@@ -501,27 +475,21 @@ func (b *body) decode(token string) (string, error) {
 		return "", err
 	}
 
-	// ... and the signature
-	blob, err := base64.RawURLEncoding.DecodeString(m[2])
+	blob, err := base64.RawURLEncoding.DecodeString(m[1])
 
 	if err != nil {
 		return "", err
 	}
 
 	signature := ssh.Signature{
-		Format: h.Format,
+		Format: t.Format,
 		Blob:   blob,
 	}
 
 	// verify that the key specified in the header signed the header and body and nothing was tampered with
-	if err = key.Verify([]byte(m[0]+"."+m[1]), &signature); err != nil {
+	if err = key.Verify([]byte(m[0]), &signature); err != nil {
 		return "", err
 	}
 
-	// now that the token has been verified we can unmarshal the body
-	if err = b.unmarshal(m[1]); err != nil {
-		return "", err
-	}
-
-	return h.Key, nil
+	return t.Supplicant, nil
 }

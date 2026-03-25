@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -50,10 +49,10 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	conn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	conn, err := dial()
 
 	if err != nil {
-		log.Fatalf("Failed to open SSH_AUTH_SOCK: %v", err)
+		log.Fatalf("Failed to open ss-agent connection: %v", err)
 	}
 
 	client := agent.NewClient(conn)

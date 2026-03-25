@@ -52,7 +52,7 @@ func main() {
 	conn, err := dial()
 
 	if err != nil {
-		log.Fatalf("Failed to open ss-agent connection: %v", err)
+		log.Fatalf("Failed to open ssh-agent connection: %v", err)
 	}
 
 	client := agent.NewClient(conn)
@@ -61,6 +61,8 @@ func main() {
 		server(client, *listen, *config, args...)
 		return
 	}
+
+	fmt.Println("Agent contacted")
 
 	var identifier string
 

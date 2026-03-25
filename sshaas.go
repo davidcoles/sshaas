@@ -22,9 +22,10 @@ import (
 )
 
 const HEADER = "X-SSH-as-a-Service"
+const COMMENT = "SSH-as-a-Service"
 
 type User struct {
-	Name       string   `json:"name"`
+	Id         string   `json:"id"`
 	Key        string   `json:"key"`
 	CA         string   `json:"ca"`
 	Principals []string `json:"principals"`
@@ -44,6 +45,7 @@ func main() {
 	endpoint := flag.String("endpoint", ENDPOINT, "endpoint url")
 	config := flag.String("config", "", "config file for server mode")
 	listen := flag.String("listen", "127.0.0.1:9999", "address to listen on")
+	remove := flag.Bool("remove", false, "remove certs/keys")
 
 	flag.Parse()
 	args := flag.Args()
@@ -71,6 +73,15 @@ func main() {
 
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if *remove {
+		for _, key := range list {
+			if key.Comment == COMMENT {
+				client.Remove(key)
+			}
+		}
+		return
 	}
 
 	// first look for a key that matches the identifier given on the command line, if present
@@ -252,12 +263,18 @@ func server(client agent.Agent, listen, configFile string, keys ...string) {
 			//"permit-user-rc":          "",
 		}
 
+		keyId := user.Key
+
+		if user.Id != "" {
+			keyId = user.Id
+		}
+
 		// create a certificate for the ephemeral key with the principals from the user database
 		cert := ssh.Certificate{
 			Key:             key,
 			Serial:          uint64(time.Now().UnixNano()), // this could likely be better done
 			CertType:        ssh.UserCert,
-			KeyId:           fmt.Sprint(now),
+			KeyId:           keyId, //fmt.Sprint(now),
 			ValidPrincipals: user.Principals,
 			ValidAfter:      now - 30, // allow for a little clock skew (seconds)
 			ValidBefore:     now + uint64(*LIFETIME*60),
@@ -330,7 +347,7 @@ func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 	addedKey := agent.AddedKey{
 		PrivateKey:   privateKey,
 		Certificate:  certificate,
-		Comment:      "SSH-as-a-Service",
+		Comment:      COMMENT,
 		LifetimeSecs: uint32(certificate.ValidBefore - now),
 		//ConfirmBeforeUse bool
 		//ConstraintExtensions []ConstraintExtension
@@ -486,7 +503,7 @@ func (t *Token) decode(s string) (string, error) {
 		Blob:   blob,
 	}
 
-	// verify that the key specified in the header signed the header and body and nothing was tampered with
+	// verify that the key specified in the token was used to sign it
 	if err = key.Verify([]byte(m[0]), &signature); err != nil {
 		return "", err
 	}

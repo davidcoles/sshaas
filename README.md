@@ -1,9 +1,9 @@
 # SSH-as-a-Service - short lifetime certificates for SSH (server and client)
 
-A simple SSH certification authority server. Given a private (CA) key
-and a configuration file describing authorised users, the server will
-generate short duration certificates granting access for the listed
-principals.
+A simple SSH certification authority server. Given a an ssh-agent
+populated with CA keys and a configuration file describing authorised
+users, the server will generate short duration certificates granting
+access for the listed principals.
 
 To avoid the client needing to have access to private keys, it
 contacts the ssh-agent to find the key to use for authentication
@@ -18,17 +18,28 @@ crypto for errors.
 
 ```
 ---
+
+ca:
+  default: AAAAC3NzaC1lZDI1NTE5AAAAIIfjTBypG/OjMECi2QGhEFk2Li4alOuybBMBbE13aom6
+  other: AAAAC3NzaC1lZDI1NTE5AAAAIBLaJuz5RQ4GcXmcNHjA00UYcU981X3Hg8obqAI+J0qg
+
 users:
 
   # Alice can log in to servers with her own account, or as the privileged sysadm user
-  - name: Alice
+  - id: Alice
     key: AAAAC3NzaC1lZDI1NTE5AAAAID2wmSViPXhYY9yjEBnUJJCaV1YBpbKmbIlBzC4EJSj5
     principals: [ alice, sysadm ]
 
-  # Bob may only log in to servers as an unprivileged business-as-usual user
-  - name: Bob
-    key: AAAAC3NzaC1lZDI1NTE5AAAAILQ2vgbwJjPqhptlTkr9bTjAkHTdwte98rTDijQ+ygjo
+  # Bob may only log in to servers as the unprivileged business-as-usual user
+  - id: Bob 
+    key: AAAAC3NzaC1lZDI1NTE5AAAAIPj4kYQUE/42Ygv6IAq68YFSP5aEc29raBeq5M6LtmnJ
     principals: [ bau ]
+
+  # Eve gets a certificate signed by the "other" CA
+  - id: Eve
+    key: AAAAC3NzaC1lZDI1NTE5AAAAIG9kZyQ0b+yamw6kzWGs1BRuJSEoIexEXTkdzaBqQohD
+    principals: [ eve ]
+    ca: other
 
 ```
 
@@ -36,7 +47,7 @@ The makefile uses `yq` to convert this to the JSON format that the server reads.
 
 # Server example
 
-`sshaas -key /path/to/ca-private-key-file -lifetime 60 config.json`
+`sshaas -config config.json`
 
 By default the server listens on loopback, port 9999. You can change
 this using the `-listen` flag (and the `-endpoint` flag to tell
@@ -69,20 +80,20 @@ $ ssh-add -l
 # Process
 
 The client selects an authorised key from those provided by ssh-agent,
-and then generates an ephemeral key pair. Using a similar process to JWTs,
-the client creates a JSON header which specifies the authorised key
-(and its type), and a body containing the public part of ephemeral
-key.
+and then generates an ephemeral key pair. Using a similar process to
+JWTs, the client creates a token which specifies the authorised key
+(and its type), and the ephemeral public key.
 
-The two sections are both base64 encoded, concatenated with a `.` and
-signed with the authorised key (via ssh-agent). The signature is
-concatenated with a `.` to the other two sections.
+The token is base64 encoded and signed with the authorised key (via
+ssh-agent). The signature is concatenated to the token string with a
+full stop character.
 
 The resulting token is then submitted to the server, which validates
 that the token is signed by the authorised key, thus proving that the
 client is genuine and the request has not been tampered with. If the
 authorised key is present in the configuration then the principals
-which the key should have access to are determined.
+which the key should have access to and the CA key to use are
+determined.
 
 The ephemeral key from the body of the request is signed into a short
 lifetime certificate along with the principals and returned to the

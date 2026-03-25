@@ -1,12 +1,23 @@
 ---
+
+ca:
+  default: AAAAC3NzaC1lZDI1NTE5AAAAIIfjTBypG/OjMECi2QGhEFk2Li4alOuybBMBbE13aom6
+  other: AAAAC3NzaC1lZDI1NTE5AAAAIBLaJuz5RQ4GcXmcNHjA00UYcU981X3Hg8obqAI+J0qg
+
 users:
 
   # Alice can log in to servers with her own account, or as the privileged sysadm user
-  - name: Alice
+  - id: Alice
     key: AAAAC3NzaC1lZDI1NTE5AAAAID2wmSViPXhYY9yjEBnUJJCaV1YBpbKmbIlBzC4EJSj5
     principals: [ alice, sysadm ]
 
   # Bob may only log in to servers as the unprivileged business-as-usual user
-  - name: Bob 
-    key: AAAAC3NzaC1lZDI1NTE5AAAAILQ2vgbwJjPqhptlTkr9bTjAkHTdwte98rTDijQ+ygjo
+  - id: Bob 
+    key: AAAAC3NzaC1lZDI1NTE5AAAAIPj4kYQUE/42Ygv6IAq68YFSP5aEc29raBeq5M6LtmnJ
     principals: [ bau ]
+
+  # Eve gets a certificate signed by the "other" CA
+  - id: Eve
+    key: AAAAC3NzaC1lZDI1NTE5AAAAIG9kZyQ0b+yamw6kzWGs1BRuJSEoIexEXTkdzaBqQohD
+    principals: [ eve ]
+    ca: other

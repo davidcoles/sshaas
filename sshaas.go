@@ -22,39 +22,101 @@ import (
 )
 
 const HEADER = "X-SSH-as-a-Service"
+const COMMENT = "SSH-as-a-Service"
 
 type User struct {
-	Name       string   `json:"name"`
+	Id         string   `json:"id"`
 	Key        string   `json:"key"`
+	CA         string   `json:"ca"`
 	Principals []string `json:"principals"`
 }
 
 type Config struct {
-	Users []User `json:"users"`
+	CA    map[string]string `json:"ca"`
+	Users []User            `json:"users"`
 }
 
-var ENDPOINT = flag.String("endpoint", "http://localhost:9999/sshaas", "endpoint url")
-var LIFETIME = flag.Uint("lifetime", 300, "certificate lifetime (seconds)")
+var DEFAULTCA = "default"
+var ENDPOINT = "http://localhost:9999/sshaas"
+var LIFETIME = flag.Uint("lifetime", 5, "certificate lifetime (minutes)")
 
 func main() {
 
-	keyFile := flag.String("key", "", "ssh private key file")
+	endpoint := flag.String("endpoint", ENDPOINT, "endpoint url")
+	config := flag.String("config", "", "config file for server mode")
 	listen := flag.String("listen", "127.0.0.1:9999", "address to listen on")
+	remove := flag.Bool("remove", false, "remove certs/keys")
 
 	flag.Parse()
 	args := flag.Args()
 
-	if *keyFile == "" {
-		client(args)
+	conn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+
+	if err != nil {
+		log.Fatalf("Failed to open SSH_AUTH_SOCK: %v", err)
+	}
+
+	client := agent.NewClient(conn)
+
+	if *config != "" {
+		server(client, *listen, *config, args...)
 		return
 	}
 
-	configFile := args[0]
+	var identifier string
 
-	conf := loadFile(configFile)
-	key := loadFile(*keyFile)
+	if len(args) > 0 {
+		identifier = args[0]
+	}
+
+	list, err := client.List()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if *remove {
+		for _, key := range list {
+			if key.Comment == COMMENT {
+				client.Remove(key)
+			}
+		}
+		return
+	}
+
+	// first look for a key that matches the identifier given on the command line, if present
+	if identifier != "" {
+		for _, key := range list {
+			blob := base64.StdEncoding.EncodeToString(key.Marshal())
+			if key.Comment == identifier || blob == identifier {
+				authWithKey(client, key, *endpoint)
+				return
+			}
+		}
+	}
+
+	// failing that look for the first ssh-ed25519 key
+	for _, key := range list {
+		if key.Format == "ssh-ed25519" {
+			authWithKey(client, key, *endpoint)
+			return
+		}
+	}
+
+	// failing that try the first key available
+	for _, key := range list {
+		authWithKey(client, key, *endpoint)
+		return
+	}
+
+	log.Fatal("No suitable key found")
+}
+
+func server(client agent.Agent, listen, configFile string, keys ...string) {
 
 	var config Config
+
+	conf := loadFile(configFile)
 
 	err := json.Unmarshal(conf, &config)
 
@@ -62,47 +124,57 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var passphrase []byte
+	for _, k := range keys {
 
-	privateKey, err := ssh.ParseRawPrivateKey(key)
+		raw := loadFile(k)
+		privateKey, err := ssh.ParseRawPrivateKey(raw)
 
-	if _, ok := err.(*ssh.PassphraseMissingError); ok {
+		if _, ok := err.(*ssh.PassphraseMissingError); ok {
 
-		fmt.Println("Passphrase:")
+			var passphrase []byte
 
-		passphrase, err = terminal.ReadPassword(int(syscall.Stdin))
+			fmt.Printf("%s passphrase: ")
+
+			passphrase, err = terminal.ReadPassword(int(syscall.Stdin))
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			privateKey, err = ssh.ParseRawPrivateKeyWithPassphrase(raw, passphrase)
+		}
 
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		privateKey, err = ssh.ParseRawPrivateKeyWithPassphrase(key, passphrase)
+		addedKey := agent.AddedKey{
+			PrivateKey: privateKey,
+			Comment:    k,
+		}
+
+		// add the key/cert to ssh-agent
+		err = client.Add(addedKey)
+
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// create suitable ssh signing key for the CA
-	signer, err := ssh.NewSignerFromKey(privateKey)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	keys := make(map[string][]string)
+	users := make(map[string]User)
 
 	for _, u := range config.Users {
-		keys[u.Key] = u.Principals
+		users[u.Key] = u
 	}
 
 	http.HandleFunc("/sshaas", func(w http.ResponseWriter, r *http.Request) {
 
-		var b body
+		var signer ssh.Signer
+
+		var token Token
 
 		// obtain the token from the http headers and validate that is correctly signed
-		token := r.Header.Get(HEADER)
-		supplicant, err := b.decode(token)
+		supplicant, err := token.decode(r.Header.Get(HEADER))
 
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
@@ -112,7 +184,7 @@ func main() {
 		}
 
 		// look up the signing key in the user database
-		principals, exists := keys[supplicant]
+		user, exists := users[supplicant]
 
 		if !exists {
 			w.Header().Set("Content-Type", "text/plain")
@@ -121,8 +193,49 @@ func main() {
 			return
 		}
 
+		if len(user.Principals) < 1 {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "No principals listed")
+			return
+		}
+
+		ca := user.CA
+
+		if ca == "" {
+			ca = DEFAULTCA
+		}
+
+		pub, exists := config.CA[ca]
+
+		if !exists {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "CA not found")
+			return
+		}
+
+		signers, _ := client.Signers()
+
+		for _, s := range signers {
+			key := s.PublicKey()
+			blob := base64.StdEncoding.EncodeToString(key.Marshal())
+			//log.Println(key, blob)
+			if pub == blob {
+				// this is the key that we're looking for
+				signer = s
+			}
+		}
+
+		if signer == nil {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "signing key not found:", pub)
+			return
+		}
+
 		// unmarshal the ephemeral public key
-		raw, err := base64.StdEncoding.DecodeString(b.Key)
+		raw, err := base64.StdEncoding.DecodeString(token.EphemeralKey)
 
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
@@ -150,15 +263,21 @@ func main() {
 			//"permit-user-rc":          "",
 		}
 
+		keyId := user.Key
+
+		if user.Id != "" {
+			keyId = user.Id
+		}
+
 		// create a certificate for the ephemeral key with the principals from the user database
 		cert := ssh.Certificate{
 			Key:             key,
 			Serial:          uint64(time.Now().UnixNano()), // this could likely be better done
 			CertType:        ssh.UserCert,
-			KeyId:           fmt.Sprint(now),
-			ValidPrincipals: principals,
-			ValidAfter:      now - 30, // allow for a little clock skew
-			ValidBefore:     now + uint64(*LIFETIME),
+			KeyId:           keyId, //fmt.Sprint(now),
+			ValidPrincipals: user.Principals,
+			ValidAfter:      now - 30, // allow for a little clock skew (seconds)
+			ValidBefore:     now + uint64(*LIFETIME*60),
 			Permissions:     ssh.Permissions{Extensions: permissions},
 			//Nonce          []byte
 			//Reserved       []byte
@@ -182,60 +301,10 @@ func main() {
 	})
 
 	fmt.Println("Listening ...")
-	log.Fatal(http.ListenAndServe(*listen, nil))
+	log.Fatal(http.ListenAndServe(listen, nil))
 }
 
-func client(args []string) {
-
-	var identifier string
-
-	if len(args) > 0 {
-		marker = args[0]
-	}
-
-	conn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
-
-	if err != nil {
-		log.Fatalf("Failed to open SSH_AUTH_SOCK: %v", err)
-	}
-
-	client := agent.NewClient(conn)
-
-	list, err := client.List()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// first look for a key that matches the identifier given on the command line, if present
-	if identifier != "" {
-		for _, key := range list {
-			blob := base64.RawURLEncoding.EncodeToString(key.Marshal())
-			if key.Comment == identifier || blob == identifier {
-				authWithKey(client, key)
-				return
-			}
-		}
-	}
-
-	// failing that look for the first ssh-ed25519 key
-	for _, key := range list {
-		if key.Format == "ssh-ed25519" {
-			authWithKey(client, key)
-			return
-		}
-	}
-
-	// failing that try the first key available
-	for _, key := range list {
-		authWithKey(client, key)
-		return
-	}
-
-	log.Fatal("No suitable key found")
-}
-
-func authWithKey(client agent.Agent, authKey *agent.Key) {
+func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 
 	// generate an ephemeral key pair
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -252,19 +321,21 @@ func authWithKey(client agent.Agent, authKey *agent.Key) {
 	}
 
 	// marshal it into the base64 representaion
-	b := body{
-		Key: base64.StdEncoding.EncodeToString(sshPublicKey.Marshal()),
+	token := Token{
+		Format:       authKey.Format,
+		Supplicant:   base64.StdEncoding.EncodeToString(authKey.Marshal()),
+		EphemeralKey: base64.StdEncoding.EncodeToString(sshPublicKey.Marshal()),
 	}
 
 	// sign the request with the auth key picked from ssh-agent
-	tokenString, err := b.encode(client, authKey)
+	tokenString, err := token.encode(client, authKey)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// submit the token to the server and hope that our request is approved
-	certificate, err := getCertificate(tokenString)
+	certificate, err := getCertificate(endpoint, tokenString)
 
 	if err != nil {
 		log.Fatal(err)
@@ -276,7 +347,7 @@ func authWithKey(client agent.Agent, authKey *agent.Key) {
 	addedKey := agent.AddedKey{
 		PrivateKey:   privateKey,
 		Certificate:  certificate,
-		Comment:      "SSH-as-a-Service",
+		Comment:      COMMENT,
 		LifetimeSecs: uint32(certificate.ValidBefore - now),
 		//ConfirmBeforeUse bool
 		//ConstraintExtensions []ConstraintExtension
@@ -288,12 +359,16 @@ func authWithKey(client agent.Agent, authKey *agent.Key) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	expires := time.Unix(int64(certificate.ValidBefore), 0)
+
+	fmt.Println("certificate expires:", expires)
 }
 
-func getCertificate(token string) (*ssh.Certificate, error) {
+func getCertificate(endpoint, token string) (*ssh.Certificate, error) {
 
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", *ENDPOINT, nil)
+	req, err := http.NewRequest("GET", endpoint, nil)
 
 	if err != nil {
 		return nil, err
@@ -357,82 +432,55 @@ func loadFile(file string) []byte {
 	return b
 }
 
-// JWT-like structures for generating/vaildating  a token
-type body struct {
-	Key string `json:"key"`
+type Token struct {
+	Format       string `json:"format"`
+	Supplicant   string `json:"supplicant"`
+	EphemeralKey string `json:"key"`
 }
 
-type head struct {
-	Fmt string `json:"fmt"`
-	Key string `json:"key"`
-}
+func (t *Token) encode(client agent.Agent, key *agent.Key) (s string, err error) {
 
-func (h *head) marshal() (string, error) { return marshal(h) }
-func (b *body) marshal() (string, error) { return marshal(b) }
-func (h *head) unmarshal(s string) error { return unmarshal(s, h) }
-func (b *body) unmarshal(s string) error { return unmarshal(s, b) }
+	t.Format = key.Format
+	t.Supplicant = base64.StdEncoding.EncodeToString(key.Marshal())
 
-func marshal(a any) (string, error) {
-	js, err := json.Marshal(a)
+	js, err := json.Marshal(t)
+
 	if err != nil {
-		return "", err
+		return
 	}
-	return base64.RawURLEncoding.EncodeToString(js), nil
+
+	payload := base64.RawURLEncoding.EncodeToString(js)
+
+	signature, err := client.Sign(key, []byte(payload))
+
+	if err != nil {
+		return
+	}
+
+	return payload + "." + base64.RawURLEncoding.EncodeToString(signature.Blob), nil
 }
 
-func unmarshal(s string, a any) (err error) {
-	var b []byte
+func (t *Token) decode(s string) (string, error) {
 
-	if b, err = base64.RawURLEncoding.DecodeString(s); err != nil {
-		return
-	}
+	m := strings.SplitN(s, ".", 2)
 
-	return json.Unmarshal(b, a)
-}
-
-func (b *body) encode(client agent.Agent, key *agent.Key) (s string, err error) {
-
-	var header, payload string
-	var signature *ssh.Signature
-
-	// prepare the header with the key and its type
-	h := head{Fmt: key.Format, Key: base64.StdEncoding.EncodeToString(key.Marshal())}
-
-	if payload, err = b.marshal(); err != nil {
-		return
-	}
-
-	if header, err = h.marshal(); err != nil {
-		return
-	}
-
-	preamble := header + "." + payload
-
-	// sign the base64 encoded head and body
-	if signature, err = client.Sign(key, []byte(preamble)); err != nil {
-		return
-	}
-
-	// concatenate the signature onto the base64 encoded head and body
-	return preamble + "." + base64.RawURLEncoding.EncodeToString(signature.Blob), nil
-}
-
-func (b *body) decode(token string) (string, error) {
-
-	m := strings.SplitN(token, ".", 3)
-
-	if len(m) != 3 {
+	if len(m) != 2 {
 		return "", fmt.Errorf("Bad token")
 	}
 
-	var h head
+	js, err := base64.RawURLEncoding.DecodeString(m[0])
 
-	if err := h.unmarshal(m[0]); err != nil {
+	if err != nil {
 		return "", err
 	}
 
-	// take the key from the header ...
-	pub, err := base64.StdEncoding.DecodeString(h.Key)
+	err = json.Unmarshal(js, t)
+
+	if err != nil {
+		return "", err
+	}
+
+	pub, err := base64.StdEncoding.DecodeString(t.Supplicant)
 
 	if err != nil {
 		return "", err
@@ -444,27 +492,21 @@ func (b *body) decode(token string) (string, error) {
 		return "", err
 	}
 
-	// ... and the signature
-	blob, err := base64.RawURLEncoding.DecodeString(m[2])
+	blob, err := base64.RawURLEncoding.DecodeString(m[1])
 
 	if err != nil {
 		return "", err
 	}
 
 	signature := ssh.Signature{
-		Format: h.Fmt,
+		Format: t.Format,
 		Blob:   blob,
 	}
 
-	// verify that the key specified in the header signed the header and body and nothing was tampered with
-	if err = key.Verify([]byte(m[0]+"."+m[1]), &signature); err != nil {
+	// verify that the key specified in the token was used to sign it
+	if err = key.Verify([]byte(m[0]), &signature); err != nil {
 		return "", err
 	}
 
-	// now that the token has been verified we can unmarshal the body
-	if err = b.unmarshal(m[1]); err != nil {
-		return "", err
-	}
-
-	return h.Key, nil
+	return t.Supplicant, nil
 }

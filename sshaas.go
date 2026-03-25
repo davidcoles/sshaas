@@ -311,14 +311,14 @@ func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to generate ephemeral key", err)
 	}
 
 	// obtain an ssh representation for submitting to the server
 	sshPublicKey, err := ssh.NewPublicKey(publicKey)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("ssh.NewPublicKey: ", err)
 	}
 
 	// marshal it into the base64 representaion
@@ -332,14 +332,14 @@ func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 	tokenString, err := token.encode(client, authKey)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("token.encode: ", err)
 	}
 
 	// submit the token to the server and hope that our request is approved
 	certificate, err := getCertificate(endpoint, tokenString)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("getCertificate: ", err)
 	}
 
 	now := uint64(time.Now().Unix())
@@ -358,7 +358,7 @@ func authWithKey(client agent.Agent, authKey *agent.Key, endpoint string) {
 	err = client.Add(addedKey)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("client.Add: ", err)
 	}
 
 	expires := time.Unix(int64(certificate.ValidBefore), 0)

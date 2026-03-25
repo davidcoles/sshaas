@@ -73,7 +73,7 @@ func main() {
 	list, err := client.List()
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("list", err)
 	}
 
 	if *remove {

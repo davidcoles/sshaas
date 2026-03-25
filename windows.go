@@ -11,7 +11,7 @@ import (
 )
 
 func dial() (io.ReadWriter, error) {
-	path := `\\.\pipe\openssh-ssh-agent`
+	path := `\\.\pipe\\openssh-ssh-agent`
 
 	if ssh_auth_sock := os.Getenv("SSH_AUTH_SOCK"); ssh_auth_sock != "" {
 		path = ssh_auth_sock
